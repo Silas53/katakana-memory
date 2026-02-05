@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hiragana Flip Card</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; padding:20px; background:#f6f7fb;}
+    .top{display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:14px;}
+    .badge{background:#fff; padding:8px 12px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);}
+    button{padding:8px 12px; border:0; border-radius:10px; background:#111827; color:#fff; cursor:pointer;}
+    button:active{transform:translateY(1px);}
+    .grid{display:grid; grid-template-columns:repeat(5, minmax(60px, 1fr)); gap:10px; max-width:720px;}
+    .card{
+      position:relative; height:90px; border-radius:14px; cursor:pointer;
+      box-shadow:0 6px 18px rgba(0,0,0,.08);
+      transform-style:preserve-3d; transition:transform .22s ease;
+      user-select:none;
+    }
+    .card.flipped{transform:rotateY(180deg);}
+    .card.matched{
+        pointer-events:none;
+    }
+    .card.matched .front,
+    .card.matched .back{
+        background:#00ff00;   /* 纯绿色 */
+        border:0;
+        color:transparent;     /* 隐藏文字 */
+    }
+
+    .face{
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      border-radius:14px; backface-visibility:hidden;
+      font-size:30px; font-weight:650;
+    }
+    .front{background:#111827; color:#fff;}
+    .back{background:#fff; color:#111827; transform:rotateY(180deg); border:1px solid rgba(0,0,0,.08);}
+    .hint{max-width:520px; color:#374151; margin-top:12px; line-height:1.5;}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="badge">Steps:<span id="moves">0</span></div>
+    <div class="badge">Pairs:<span id="matched">0</span>/<span id="totalPairs">0</span></div>
+    <button id="restart">Restart</button>
+  </div>
+
+  <div id="grid" class="grid" aria-label="memory game board"></div>
+
+  <div class="hint">
+    Click to flip two cards; successfully matching the hiragana with its corresponding romaji will clear them; mismatches will flip them back.<br/>
+  </div>
+
+<script>
+(() => {
+  const PAIRS = [
+  // Seion (basic 46)
+  ["ア","a"], ["イ","i"], ["ウ","u"], ["エ","e"], ["オ","o"],
+  ["カ","ka"], ["キ","ki"], ["ク","ku"], ["ケ","ke"], ["コ","ko"],
+  ["サ","sa"], ["シ","shi"], ["ス","su"], ["セ","se"], ["ソ","so"],
+  ["タ","ta"], ["チ","chi"], ["ツ","tsu"], ["テ","te"], ["ト","to"],
+  ["ナ","na"], ["ニ","ni"], ["ヌ","nu"], ["ネ","ne"], ["ノ","no"],
+  ["ハ","ha"], ["ヒ","hi"], ["フ","fu"], ["ヘ","he"], ["ホ","ho"],
+  ["マ","ma"], ["ミ","mi"], ["ム","mu"], ["メ","me"], ["モ","mo"],
+  ["ヤ","ya"], ["ユ","yu"], ["ヨ","yo"],
+  ["ラ","ra"], ["リ","ri"], ["ル","ru"], ["レ","re"], ["ロ","ro"],
+  ["ワ","wa"], ["ヲ","wo"], ["ン","n"],
+
+  // Dakuon / Handakuon (23) — excluding ヂ/ヅ to keep total 69
+  ["ガ","ga"], ["ギ","gi"], ["グ","gu"], ["ゲ","ge"], ["ゴ","go"],
+  ["ザ","za"], ["ジ","ji"], ["ズ","zu"], ["ゼ","ze"], ["ゾ","zo"],
+  ["ダ","da"], ["デ","de"], ["ド","do"],
+  ["バ","ba"], ["ビ","bi"], ["ブ","bu"], ["ベ","be"], ["ボ","bo"],
+  ["パ","pa"], ["ピ","pi"], ["プ","pu"], ["ペ","pe"], ["ポ","po"],
+];
+
+
+
+  const PICK = 10; // 从题库随机挑选多少对来玩（必须偶数且不超过题库总量）
+  const gridEl = document.getElementById("grid");
+  const movesEl = document.getElementById("moves");
+  const matchedEl = document.getElementById("matched");
+  const totalPairsEl = document.getElementById("totalPairs");
+  const restartBtn = document.getElementById("restart");
+
+  let cards = [];
+  let first = null;
+  let second = null;
+  let lock = false;
+  let moves = 0;
+  let matchedPairs = 0;
+
+  function shuffle(arr){
+    for(let i = arr.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function buildDeck(){
+  const indices = [...Array(PAIRS.length).keys()];
+  shuffle(indices);
+  const chosen = indices.slice(0, PICK);
+
+  const deck = [];
+  chosen.forEach((pairIdx, localId) => {
+    const [h, r] = PAIRS[pairIdx];
+    // localId 用作本局 pairId（0..17），避免跨局混乱
+    deck.push({ id: `${localId}-h`, pairId: localId, kind: "h", text: h, matched:false });
+    deck.push({ id: `${localId}-r`, pairId: localId, kind: "r", text: r, matched:false });
+  });
+
+  return shuffle(deck);
+}
+
+
+  function resetState(){
+    cards = buildDeck();
+    first = null;
+    second = null;
+    lock = false;
+    moves = 0;
+    matchedPairs = 0;
+    movesEl.textContent = moves;
+    matchedEl.textContent = matchedPairs;
+    totalPairsEl.textContent = PICK;
+  }
+
+  function render(){
+    gridEl.innerHTML = "";
+    cards.forEach((c, index) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.dataset.index = index;
+
+      const front = document.createElement("div");
+      front.className = "face front";
+      front.textContent = "？";
+
+      const back = document.createElement("div");
+      back.className = "face back";
+      back.textContent = c.text;
+
+      card.appendChild(front);
+      card.appendChild(back);
+
+      card.addEventListener("click", () => onFlip(index, card));
+      gridEl.appendChild(card);
+    });
+  }
+
+  function setFlipped(index, flipped){
+    const el = gridEl.querySelector(`.card[data-index="${index}"]`);
+    if(!el) return;
+    el.classList.toggle("flipped", flipped);
+  }
+
+  function setMatched(index){
+    const el = gridEl.querySelector(`.card[data-index="${index}"]`);
+    if(!el) return;
+    el.classList.add("matched");
+  }
+
+  function isMatch(a, b){
+    // 必须同 pairId，且一张 hiragana 一张 romaji（避免两张同类文本被误判）
+    return a.pairId === b.pairId && a.kind !== b.kind;
+  }
+
+  function onFlip(index, el){
+    if(lock) return;
+    const c = cards[index];
+    if(c.matched) return;
+
+    // 禁止重复点同一张作为第二张
+    if(first && first.index === index) return;
+
+    el.classList.add("flipped");
+
+    if(!first){
+      first = { index, card: c };
+      return;
+    }
+
+    second = { index, card: c };
+    moves += 1;
+    movesEl.textContent = moves;
+    lock = true;
+
+    const a = first.card;
+    const b = second.card;
+
+    if(isMatch(a, b)){
+  // 先让它们保持翻开可见
+  const i1 = first.index, i2 = second.index;
+
+  // 2 秒后再消除（变灰并不可点击）
+  setTimeout(() => {
+    cards[i1].matched = true;
+    cards[i2].matched = true;
+    setMatched(i1);
+    setMatched(i2);
+
+    matchedPairs += 1;
+    matchedEl.textContent = matchedPairs;
+
+    first = null;
+    second = null;
+    lock = false;
+
+    if(matchedPairs === PICK){
+      setTimeout(() => alert(`通关：共用步数 ${moves}。`), 200);
+    }
+  }, 2000);
+
+  return;
+}
+
+
+    // 不匹配：延时翻回
+    setTimeout(() => {
+      setFlipped(first.index, false);
+      setFlipped(second.index, false);
+      first = null;
+      second = null;
+      lock = false;
+    }, 650);
+  }
+
+  restartBtn.addEventListener("click", () => {
+    resetState();
+    render();
+  });
+
+  // init
+  resetState();
+  render();
+})();
+</script>
+</body>
+</html>
